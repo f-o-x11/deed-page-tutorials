@@ -1,0 +1,36 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Give Codex a share-this-page step that waits for your yes</title><style>body{font-family:system-ui,sans-serif;max-width:720px;margin:2rem auto;padding:0 1rem;line-height:1.55;color:#111} a{color:#0b57d0} pre{background:#f4f4f5;padding:1rem;overflow:auto;border-radius:8px} code{font-family:ui-monospace,monospace;font-size:0.92em} h1{font-size:1.6rem} h2{font-size:1.2rem;margin-top:1.8rem}</style></head><body><h1>Give Codex a &quot;share this page&quot; step that waits for your yes</h1><p>Codex is happy to write a benchmark table, a migration checklist or a small dashboard as an HTML file. Getting that file in front of someone else is still a manual job: zip it, upload it somewhere, paste a link. This walkthrough adds one shell script and a short section in a global AGENTS.md file, so you can tell Codex &quot;share bench.html&quot; in any repo and get back a public link, but only after it has shown you what it is about to publish and you have said yes.</p><h2>Where the rule lives</h2><p>Codex reads AGENTS.md files for instructions. A file in your Codex home folder (<code>~/.codex/AGENTS.md</code>) applies to every project, and an AGENTS.md in a repo adds project rules on top. A sharing rule is personal rather than project-specific, so the global file is the natural place. Keep the script next to it in <code>~/.codex/bin/share-html.sh</code> and mark it executable.</p><h2>Two calls instead of a prompt</h2><p>The script never asks &quot;Publish? [y/N]&quot; on its own, because the agent&#x27;s shell is not a terminal you are watching and the agent could simply answer for you. It is split into two calls:</p><p>1. <code>share-html.sh bench.html</code> prints the file size and page title, says that publishing makes it public, and exits. Nothing is uploaded and nothing is written to disk. 2. <code>share-html.sh bench.html --confirmed</code> uploads the file and prints the URL.</p><p>The AGENTS.md text tells Codex that the second call is only allowed after you answer yes in the chat. If you run Codex with network access turned off in its sandbox, the upload will also need your approval to reach the network, which gives you a second checkpoint.</p><h2>The script</h2><p>It publishes with <a href="https://deed.page">deed.page</a>, where a single HTML file goes up with one <code>curl -T</code> and no account. The first upload returns an owner token; the script stores it in <code>~/.config/deed-page/token</code> (mode 600) and masks it in its output so it never lands in the Codex transcript. It also remembers which address belongs to which file, so sharing the same file again updates the existing link instead of creating a new one.</p><pre><code>#!/usr/bin/env bash
+# share-html.sh FILE [--confirmed]
+# Without --confirmed: print a preview summary and exit (nothing leaves the machine).
+# With --confirmed: publish FILE to a public deed.page URL. Agents pass --confirmed
+# only after the human said yes in chat. The owner token is saved, never printed.
+set -euo pipefail
+FILE=${1:?usage: share-html.sh FILE [--confirmed]}
+[ -f &quot;$FILE&quot; ] || { echo &quot;No such file: $FILE&quot;; exit 1; }
+TITLE=$(grep -o -i -m1 &#x27;&lt;title&gt;[^&lt;]*&#x27; &quot;$FILE&quot; | sed &#x27;s/&lt;title&gt;//I&#x27; || true)
+if [ &quot;${2:-}&quot; != &quot;--confirmed&quot; ]; then
+  echo &quot;Ready to publish: $FILE ($(wc -c &lt; &quot;$FILE&quot;) bytes, title: ${TITLE:-none})&quot;
+  echo &quot;This makes it public on the internet. Ask the user, then rerun with --confirmed.&quot;
+  exit 0
+fi
+CONF=~/.config/deed-page; KEY=$(printf &#x27;%s&#x27; &quot;$(realpath &quot;$FILE&quot;)&quot; | sha1sum | cut -c1-10)
+SLUG=$(cat &quot;$CONF/slug-$KEY&quot; 2&gt;/dev/null || echo &quot;share-$(openssl rand -hex 4)&quot;)
+TOK=${DEEDPAGE_TOKEN:-$(cat &quot;$CONF/token&quot; 2&gt;/dev/null || true)}
+set --; [ -n &quot;$TOK&quot; ] &amp;&amp; set -- -H &quot;Authorization: Bearer $TOK&quot;
+RESP=$(curl -sS -T &quot;$FILE&quot; &quot;https://deed.page/v1/sites?slug=$SLUG&quot; &quot;$@&quot; -H &quot;X-Client: share-html-script&quot;)
+NEW=$(printf &#x27;%s&#x27; &quot;$RESP&quot; | sed -n &#x27;s/.*&quot;token&quot;: *&quot;\(deed_tok_[^&quot;]*\)&quot;.*/\1/p&#x27;)
+(umask 077; mkdir -p &quot;$CONF&quot;; printf &#x27;%s&#x27; &quot;$SLUG&quot; &gt; &quot;$CONF/slug-$KEY&quot;
+ [ -n &quot;$NEW&quot; ] &amp;&amp; printf &#x27;%s&#x27; &quot;$NEW&quot; &gt; &quot;$CONF/token&quot;) || true
+printf &#x27;%s&#x27; &quot;$RESP&quot; | sed &#x27;s/&quot;token&quot;: *&quot;[^&quot;]*&quot;/&quot;token&quot;:&quot;&lt;saved&gt;&quot;/&#x27; \
+  | python3 -c &#x27;import json,sys; d=json.load(sys.stdin); print(d.get(&quot;url&quot;) or d)&#x27;
+</code></pre><h2>The section for ~/.codex/AGENTS.md</h2><pre><code>## Sharing HTML files
+- When I ask you to share an HTML file, run `~/.codex/bin/share-html.sh &lt;file&gt;` first
+  and show me the summary it prints.
+- Then ask &quot;Publish this to a public URL?&quot; and stop. Only after I reply yes in this
+  conversation, run `~/.codex/bin/share-html.sh &lt;file&gt; --confirmed` and give me the URL.
+- Never add --confirmed on your own initiative. Never open, cat or print anything in
+  ~/.config/deed-page/, and never paste the owner token anywhere.
+- If I ask you to update a link I already shared, show the summary again, wait for my
+  yes, then rerun with --confirmed. The address stays the same.
+</code></pre><h2>What happened when I ran it</h2><p>I tested the script by hand the same way Codex would call it, with a 64-byte <code>bench.html</code> titled &quot;Codex bench table&quot;. The preview call printed <code>Ready to publish: bench.html (64 bytes, title: Codex bench table)</code> and created no files at all. The <code>--confirmed</code> call printed a <code>https://share-xxxxxxxx.deed.page/</code> address that served the page. After editing the heading and running <code>--confirmed</code> again, the same address showed the new version. The token file had mode 600 and its value never appeared in the output.</p><h2>Removing a page</h2><pre><code>curl -X DELETE &quot;https://deed.page/v1/sites/&lt;slug&gt;&quot; \
+  -H &quot;Authorization: Bearer $(cat ~/.config/deed-page/token)&quot;
+</code></pre><p>The slug is the part of the address before <code>.deed.page</code>. In my test the DELETE returned 200 and the address returned 404 a few seconds later. Run this one yourself rather than asking Codex to, since it reads the token.</p><h2>Prefer a packaged skill?</h2><p>The <a href="https://github.com/f-o-x11/deed-page-skill">deed.page skill</a> bundles the same behavior for Codex, Claude Code and other agents: a preview first, a publish only after your yes, and the owner token kept away from the model. Full API details are in the <a href="https://deed.page/docs">deed.page docs</a>.</p><p>Written by the deed.page team.</p><p>Published by <a href="https://deed.page">deed.page</a> / Avatar 8 LLC. Docs: <a href="https://deed.page/docs">deed.page/docs</a>. Skill: <a href="https://github.com/f-o-x11/deed-page-skill">f-o-x11/deed-page-skill</a>.</p></body></html>
