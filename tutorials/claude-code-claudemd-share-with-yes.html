@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CLAUDE.md rule: share HTML only after you say yes</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:720px;margin:2rem auto;padding:0 1rem;line-height:1.55;color:#111}
+a{color:#0b57d0} pre{background:#f4f4f5;padding:1rem;overflow:auto;border-radius:8px}
+code{font-family:ui-monospace,monospace;font-size:0.92em} h1{font-size:1.6rem} h2{font-size:1.2rem;margin-top:1.8rem}
+</style>
+</head>
+<body>
+<h1>A CLAUDE.md rule that shares HTML only after you say yes</h1>
+<p>Claude Code will happily turn a coverage dump, a design memo or a one-page standup board into HTML. Getting that file onto a public URL is still a detour: zip, upload, paste. This walkthrough adds a short rule to <code>CLAUDE.md</code> plus a two-step shell script, so you can say &quot;share status.html&quot; and Claude waits for your yes before anything leaves the machine. No MCP install required — just shell and a rule file.</p>
+
+<h2>Where the rule lives</h2>
+<p>Claude Code reads <code>CLAUDE.md</code> in the project root, and a global file at <code>~/.claude/CLAUDE.md</code> if you keep one. A personal sharing habit belongs in the global file; put a project-only variant in the repo when a team wants the same gate. Keep the script at <code>~/.claude/bin/share-html.sh</code> (or <code>scripts/share-html.sh</code> in a repo) and mark it executable.</p>
+
+<h2>Two calls, not a prompt</h2>
+<p>Do not put <code>read -p &quot;Publish?&quot;</code> in the script. The agent terminal is not a session you are watching, and the model can answer itself. Split the work:</p>
+<ol>
+<li><code>share-html.sh status.html</code> prints path, byte size and the page <code>&lt;title&gt;</code>, warns that publishing makes it public, and exits. Nothing is uploaded.</li>
+<li><code>share-html.sh status.html --confirmed</code> uploads and prints the live URL.</li>
+</ol>
+<p>The CLAUDE.md text below tells Claude that the second form is allowed only after you reply yes in chat. If network is sandboxed, the upload needs a separate approval, which is a useful second checkpoint.</p>
+
+<h2>The script</h2>
+<p>It publishes with <a href="https://deed.page">deed.page</a>: one <code>curl -T</code>, no account. The first upload returns an owner token; the script stores it under <code>~/.config/deed-page/token</code> (mode 600) and masks it in stdout so it never lands in the Claude transcript. A small map file remembers which slug belongs to which local path, so a second share updates the same address.</p>
+<pre><code>#!/usr/bin/env bash
+# share-html.sh FILE [--confirmed]
+# Without --confirmed: preview only (size + title). With --confirmed: publish.
+# Agents may pass --confirmed only after the human said yes in chat.
+set -euo pipefail
+FILE=${1:-}; MODE=${2:-}
+[[ -n "$FILE" &amp;&amp; -f "$FILE" ]] || { echo "usage: $0 FILE [--confirmed]" &gt;&amp;2; exit 2; }
+TITLE=$(grep -oim1 '&lt;title&gt;[^&lt;]*' "$FILE" 2&gt;/dev/null | sed 's/&lt;title&gt;//I' || echo "(no title)")
+SIZE=$(wc -c &lt;"$FILE" | tr -d ' ')
+echo "File: $FILE"
+echo "Size: $SIZE bytes"
+echo "Title: $TITLE"
+echo "Publishing makes this file public on the internet."
+if [[ "$MODE" != "--confirmed" ]]; then
+  echo "Preview only. Re-run with --confirmed after the human says yes in chat."
+  exit 0
+fi
+mkdir -p "$HOME/.config/deed-page"
+chmod 700 "$HOME/.config/deed-page"
+MAP="$HOME/.config/deed-page/slug-map"
+TOKEN_FILE="$HOME/.config/deed-page/token"
+BASE=$(basename "$FILE"); BASE=${BASE%.*}
+SLUG=$(awk -v f="$FILE" '$1==f{print $2; exit}' "$MAP" 2&gt;/dev/null || true)
+[[ -n "$SLUG" ]] || SLUG=$(echo "$BASE" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9-' | cut -c1-40)
+[[ -n "$SLUG" ]] || SLUG="page-$RANDOM"
+AUTH=(); [[ -f "$TOKEN_FILE" ]] &amp;&amp; AUTH=(-H "Authorization: Bearer $(cat "$TOKEN_FILE")")
+RESP=$(curl -sS -D /tmp/deed-headers -o /tmp/deed-body -w "%{http_code}" \
+  -T "$FILE" "${AUTH[@]}" "https://deed.page/v1/sites?slug=$SLUG")
+BODY=$(cat /tmp/deed-body)
+echo "$BODY" | grep -o '"url"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 || echo "$BODY"
+# Save token if present; never echo it.
+python3 - "$BODY" "$TOKEN_FILE" &lt;&lt;'PY'
+import json,sys,os
+body, path = sys.argv[1], sys.argv[2]
+try:
+  d=json.loads(body)
+except Exception:
+  sys.exit(0)
+tok=d.get("token") or d.get("ownerToken")
+if tok:
+  os.makedirs(os.path.dirname(path), exist_ok=True)
+  open(path,"w").write(tok); os.chmod(path,0o600)
+PY
+ABS=$(cd "$(dirname "$FILE")" &amp;&amp; pwd)/$(basename "$FILE")
+touch "$MAP"; grep -v "^$ABS " "$MAP" &gt;"$MAP.tmp" || true
+echo "$ABS $SLUG" &gt;&gt;"$MAP.tmp"; mv "$MAP.tmp" "$MAP"
+echo "HTTP $RESP"
+</code></pre>
+
+<h2>Drop this into CLAUDE.md</h2>
+<pre><code>## Sharing HTML / static pages
+- When I ask to share a page, run `~/.claude/bin/share-html.sh PATH` (no --confirmed).
+  Show me the preview (path, size, title) and ask: "Publish this to a public URL?"
+- Only after I reply yes in this chat, run the same command with `--confirmed` and
+  give me the URL. Never publish on your own.
+- Never print, cat or paste an owner token from ~/.config/deed-page/ or from command output.
+</code></pre>
+
+<h2>What a good turn looks like</h2>
+<p>You: &quot;Share coverage/index.html with the team.&quot;<br>
+Claude: runs the preview, shows size/title, asks for yes.<br>
+You: &quot;yes&quot;<br>
+Claude: runs with <code>--confirmed</code>, returns a <code>https://….deed.page/</code> URL.</p>
+<p>Edit the file later and ask again; the slug map updates the same address when your saved owner token is present (Claude must not read that file).</p>
+
+<h2>Prefer a packaged skill?</h2>
+<p>The <a href="https://github.com/f-o-x11/deed-page-skill">deed.page skill</a> packages the same preview-then-yes flow for Claude Code, Codex and other agents, including an MCP path if you would rather not keep a shell script. API details: <a href="https://deed.page/docs">deed.page docs</a>.</p>
+<p>Written by the deed.page team (Avatar 8 LLC). Site: <a href="https://deed.page">deed.page</a>. Docs: <a href="https://deed.page/docs">deed.page/docs</a>.</p>
+</body>
+</html>
