@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A Cursor rule that shares HTML only after you say yes</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:720px;margin:2rem auto;padding:0 1rem;line-height:1.55;color:#111}
+a{color:#0b57d0} pre{background:#f4f4f5;padding:1rem;overflow:auto;border-radius:8px}
+code{font-family:ui-monospace,monospace;font-size:0.92em} h1{font-size:1.6rem} h2{font-size:1.2rem;margin-top:1.8rem}
+</style>
+</head>
+<body>
+<h1>A Cursor rule that shares HTML only after you say yes</h1>
+<p>Cursor agents are good at turning a messy folder into a tidy HTML summary: a Lighthouse dump, a Playwright report, a one-page status board for a standup. The last mile is still manual — zip the file, open a host, paste a link. This note adds a project rule under <code>.cursor/rules/</code> plus a tiny script so you can ask the agent to share a page and it will wait for your yes before anything goes public.</p>
+
+<h2>Why the yes lives in chat</h2>
+<p>Cursor runs agent terminals without a human watching the prompt. A <code>read -p "Publish?"</code> either hangs or invites the model to answer itself. Split the script into two modes instead:</p>
+<ol>
+<li><code>scripts/share-html.sh report.html</code> prints the path, size and <code>&lt;title&gt;</code>, warns that publishing makes it public, and exits. Nothing leaves the machine.</li>
+<li><code>scripts/share-html.sh report.html --confirmed</code> uploads. The rule tells the agent to use this form only after you reply yes in the conversation.</li>
+</ol>
+
+<h2>The script</h2>
+<p>It publishes with <a href="https://deed.page">deed.page</a>: one <code>curl -T</code>, no account required. The first upload returns an owner token; the script stores it at <code>~/.config/deed-page/token</code> (mode 600) and masks it in stdout so it never lands in the chat. It also remembers one slug per file path, so a second share after an edit updates the same URL.</p>
+<pre><code>#!/usr/bin/env bash
+# share-html.sh FILE [--confirmed]
+set -euo pipefail
+FILE=${1:?usage: share-html.sh FILE [--confirmed]}
+[ -f "$FILE" ] || { echo "No such file: $FILE"; exit 1; }
+TITLE=$(grep -o -i -m1 '&lt;title&gt;[^&lt;]*' "$FILE" | sed 's/&lt;title&gt;//I' || true)
+if [ "${2:-}" != "--confirmed" ]; then
+  echo "Ready to publish: $FILE ($(wc -c &lt; "$FILE") bytes, title: ${TITLE:-none})"
+  echo "This makes it public on the internet. Ask the user, then rerun with --confirmed."
+  exit 0
+fi
+CONF=~/.config/deed-page; KEY=$(printf '%s' "$(realpath "$FILE")" | sha1sum | cut -c1-10)
+SLUG=$(cat "$CONF/slug-$KEY" 2&gt;/dev/null || echo "share-$(openssl rand -hex 4)")
+TOK=${DEEDPAGE_TOKEN:-$(cat "$CONF/token" 2&gt;/dev/null || true)}
+set --; [ -n "$TOK" ] &amp;&amp; set -- -H "Authorization: Bearer $TOK"
+RESP=$(curl -sS -T "$FILE" "https://deed.page/v1/sites?slug=$SLUG" "$@" -H "X-Client: share-html-script")
+NEW=$(printf '%s' "$RESP" | sed -n 's/.*"token": *"\(deed_tok_[^"]*\)".*/\1/p')
+(umask 077; mkdir -p "$CONF"; printf '%s' "$SLUG" &gt; "$CONF/slug-$KEY"
+ [ -n "$NEW" ] &amp;&amp; printf '%s' "$NEW" &gt; "$CONF/token") || true
+printf '%s' "$RESP" | sed 's/"token": *"[^"]*"/"token":"&lt;saved&gt;"/' \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("url") or d)'
+</code></pre>
+<p>Save as <code>scripts/share-html.sh</code> and <code>chmod +x</code> it.</p>
+
+<h2>The Cursor rule</h2>
+<p>Drop this into <code>.cursor/rules/share-html.mdc</code> (or the equivalent rules file your Cursor version uses). Keep the wording tight so the agent treats the second call as gated:</p>
+<pre><code>---
+description: Share an HTML file as a public link only after the user says yes
+globs:
+alwaysApply: false
+---
+When I ask you to share or publish an HTML file:
+1. Run `scripts/share-html.sh &lt;file&gt;` and show me the summary it prints.
+2. Ask "Publish this to a public URL?" and stop.
+3. Only after I reply yes in this chat, run `scripts/share-html.sh &lt;file&gt; --confirmed` and give me the URL.
+Never pass --confirmed on your own. Never open, cat, or paste anything from ~/.config/deed-page/.
+</code></pre>
+
+<h2>What I checked</h2>
+<p>I ran the script the same way an agent would: preview on a 70-byte <code>status.html</code> titled "Standup board" printed the summary and wrote nothing. With <code>--confirmed</code> it returned a <code>https://share-xxxxxxxx.deed.page/</code> URL that served the page. Editing the heading and re-running with <code>--confirmed</code> kept the same address. The token file stayed mode 600 and never appeared in the output.</p>
+
+<h2>Taking a page down</h2>
+<pre><code>curl -X DELETE "https://deed.page/v1/sites/&lt;slug&gt;" \
+  -H "Authorization: Bearer $(cat ~/.config/deed-page/token)"
+</code></pre>
+<p>Run the delete yourself. The slug is the label before <code>.deed.page</code>.</p>
+
+<h2>Want the packaged skill instead?</h2>
+<p>The <a href="https://github.com/f-o-x11/deed-page-skill">deed.page skill</a> wraps the same preview-then-yes flow for Cursor, Claude Code and Codex. API details live in the <a href="https://deed.page/docs">deed.page docs</a>.</p>
+<p>Written by the deed.page team (Avatar 8 LLC). Site: <a href="https://deed.page">deed.page</a>. Docs: <a href="https://deed.page/docs">deed.page/docs</a>.</p>
+</body>
+</html>
