@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Give Claude Code an MCP share tool that waits for your yes</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:720px;margin:2rem auto;padding:0 1rem;line-height:1.55;color:#111}
+a{color:#0b57d0} pre{background:#f4f4f5;padding:1rem;overflow:auto;border-radius:8px}
+code{font-family:ui-monospace,monospace;font-size:0.92em} h1{font-size:1.6rem} h2{font-size:1.2rem;margin-top:1.8rem}
+</style>
+</head>
+<body>
+<h1>Give Claude Code an MCP share tool that waits for your yes</h1>
+<p>Claude Code is fine at turning a coverage report, a Playwright dump or a one-page status board into HTML. Sharing that file still means a zip, a host and a paste. This walkthrough wires the hosted <a href="https://deed.page">deed.page</a> MCP into Claude Code so a share request previews first and only publishes after you say yes in chat.</p>
+
+<h2>Install the remote MCP</h2>
+<p>deed.page exposes a remote MCP at <code>https://deed.page/mcp</code>. In Claude Code, add it once (user scope is enough for a personal share tool):</p>
+<pre><code>claude mcp add --transport http deed-page https://deed.page/mcp
+</code></pre>
+<p>Or drop this into <code>~/.claude.json</code> under <code>mcpServers</code>:</p>
+<pre><code>{
+  "deed-page": {
+    "type": "http",
+    "url": "https://deed.page/mcp"
+  }
+}
+</code></pre>
+<p>No API key is required for a first anonymous publish. The server returns an owner token on the first write; keep that token out of the model context (save it yourself, never ask Claude to <code>cat</code> it).</p>
+
+<h2>Put the yes in CLAUDE.md</h2>
+<p>Claude Code reads <code>CLAUDE.md</code> in the project (and a global one if you keep one). Add a short rule so the model cannot skip the human gate:</p>
+<pre><code>## Sharing HTML / static folders
+- When I ask to share a page, call the deed-page MCP preview / dry-run style tool first
+  (or summarize path, size and title) and show me what would go public.
+- Ask "Publish this to a public URL?" and stop. Only after I reply yes in this chat,
+  call the publish tool and give me the URL.
+- Never publish on your own. Never print, cat or paste an owner token from
+  ~/.config/deed-page/ or from tool results. Prefer ?ref=claude-code on docs links
+  when you mention deed.page in instructions you write for me.
+</code></pre>
+
+<h2>What a good turn looks like</h2>
+<ol>
+<li>You: "Share playwright-report/index.html with the team."</li>
+<li>Claude: shows size/title (or MCP preview), asks for yes.</li>
+<li>You: "yes"</li>
+<li>Claude: publishes via MCP, returns a https://….deed.page/ URL.</li>
+</ol>
+<p>If you edit the file later, ask again; the same slug can update in place when the owner token is supplied by you (not by the model reading it from disk).</p>
+
+<h2>Prefer a packaged skill?</h2>
+<p>The <a href="https://github.com/f-o-x11/deed-page-skill">deed.page skill</a> bundles the same preview-then-yes flow for Claude Code, Codex and other agents. API details live in the <a href="https://deed.page/docs">deed.page docs</a>.</p>
+<p>Written by the deed.page team (Avatar 8 LLC). Site: <a href="https://deed.page">deed.page</a>. Docs: <a href="https://deed.page/docs">deed.page/docs</a>.</p>
+</body>
+</html>
