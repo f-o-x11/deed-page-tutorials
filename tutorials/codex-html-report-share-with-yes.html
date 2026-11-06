@@ -1,0 +1,72 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Let Codex share a Playwright HTML report only after you say yes</title><style>body{font-family:system-ui,sans-serif;max-width:720px;margin:2rem auto;padding:0 1rem;line-height:1.55;color:#111} a{color:#0b57d0} pre{background:#f4f4f5;padding:1rem;overflow:auto;border-radius:8px} code{font-family:ui-monospace,monospace;font-size:0.92em} h1{font-size:1.6rem} h2{font-size:1.2rem;margin-top:1.8rem}</style></head><body>
+<h1>Let Codex share a Playwright HTML report only after you say yes</h1>
+<p>When Codex finishes a Playwright (or Vitest / Jest HTML) run, the useful artifact is often a single <code>report.html</code> or <code>playwright-report/index.html</code> on disk. Screenshots lose the expandable failures and trace links. Emailing a zip is slow. This walkthrough adds one shell script plus a short rule in <code>~/.codex/AGENTS.md</code> so you can say &quot;share the Playwright report&quot; and get a public link — but only after Codex has printed a preview and you have answered yes in chat.</p>
+<p>It is the same two-call pattern as a generic HTML share helper, aimed at test reports rather than dashboards: preview first, publish only with <code>--confirmed</code>, and keep the owner token off the model transcript.</p>
+
+<h2>Why reports need a yes-gate</h2>
+<p>HTML reports can embed failure snippets, request URLs, and sometimes screenshot paths. Treat them as potentially sensitive. Codex must never publish unattended. The script therefore refuses to upload unless you pass <code>--confirmed</code>, and the AGENTS.md text forbids adding that flag until you reply yes in the conversation.</p>
+
+<h2>The script (~/.codex/bin/share-html.sh)</h2>
+<p>Save this, then <code>chmod +x ~/.codex/bin/share-html.sh</code>. It publishes a single HTML file to <a href="https://deed.page">deed.page</a> with one <code>curl -T</code>. No account is required for the first upload. The owner token is written to <code>~/.config/deed-page/token</code> (mode 600) and masked in stdout so it never appears in the Codex transcript.</p>
+<pre><code>#!/usr/bin/env bash
+# share-html.sh FILE [--confirmed]
+# Without --confirmed: print a preview summary and exit (nothing leaves the machine).
+# With --confirmed: publish FILE to a public deed.page URL. Agents pass --confirmed
+# only after the human said yes in chat. The owner token is saved, never printed.
+set -euo pipefail
+FILE=${1:?usage: share-html.sh FILE [--confirmed]}
+[ -f &quot;$FILE&quot; ] || { echo &quot;No such file: $FILE&quot;; exit 1; }
+TITLE=$(grep -o -i -m1 &#x27;&lt;title&gt;[^&lt;]*&#x27; &quot;$FILE&quot; | sed &#x27;s/&lt;title&gt;//I&#x27; || true)
+if [ &quot;${2:-}&quot; != &quot;--confirmed&quot; ]; then
+  echo &quot;Ready to publish: $FILE ($(wc -c &lt; &quot;$FILE&quot;) bytes, title: ${TITLE:-none})&quot;
+  echo &quot;This makes it public on the internet. Ask the user, then rerun with --confirmed.&quot;
+  exit 0
+fi
+CONF=~/.config/deed-page; KEY=$(printf &#x27;%s&#x27; &quot;$(realpath &quot;$FILE&quot;)&quot; | sha1sum | cut -c1-10)
+SLUG=$(cat &quot;$CONF/slug-$KEY&quot; 2&gt;/dev/null || echo &quot;share-$(openssl rand -hex 4)&quot;)
+TOK=${DEEDPAGE_TOKEN:-$(cat &quot;$CONF/token&quot; 2&gt;/dev/null || true)}
+set --; [ -n &quot;$TOK&quot; ] &amp;&amp; set -- -H &quot;Authorization: Bearer $TOK&quot;
+RESP=$(curl -sS -T &quot;$FILE&quot; &quot;https://deed.page/v1/sites?slug=$SLUG&quot; &quot;$@&quot; -H &quot;X-Client: share-html-script&quot;)
+NEW=$(printf &#x27;%s&#x27; &quot;$RESP&quot; | sed -n &#x27;s/.*&quot;token&quot;: *&quot;\(deed_tok_[^&quot;]*\)&quot;.*/\1/p&#x27;)
+(umask 077; mkdir -p &quot;$CONF&quot;; printf &#x27;%s&#x27; &quot;$SLUG&quot; &gt; &quot;$CONF/slug-$KEY&quot;
+ [ -n &quot;$NEW&quot; ] &amp;&amp; printf &#x27;%s&#x27; &quot;$NEW&quot; &gt; &quot;$CONF/token&quot;) || true
+printf &#x27;%s&#x27; &quot;$RESP&quot; | sed &#x27;s/&quot;token&quot;: *&quot;[^&quot;]*&quot;/&quot;token&quot;:&quot;&lt;saved&gt;&quot;/&#x27; \
+  | python3 -c &#x27;import json,sys; d=json.load(sys.stdin); print(d.get(&quot;url&quot;) or d)&#x27;
+</code></pre>
+<p>Point the first argument at the report file Codex just wrote — for example <code>playwright-report/index.html</code>, a self-contained Playwright HTML report, or a one-file API demo page you asked it to generate after a failing test.</p>
+
+<h2>The section for ~/.codex/AGENTS.md</h2>
+<pre><code>## Sharing HTML test reports
+- When I ask you to share a Playwright, Vitest, Jest, coverage, or other HTML
+  report (or a one-file API demo page), run
+  `~/.codex/bin/share-html.sh &lt;file&gt;` first and show me the summary.
+- Then ask &quot;Publish this report to a public URL?&quot; and stop. Only after I reply
+  yes in this conversation, run
+  `~/.codex/bin/share-html.sh &lt;file&gt; --confirmed` and give me the URL.
+- Never add --confirmed on your own. Never open, cat, or print anything under
+  ~/.config/deed-page/, and never paste the owner token anywhere.
+- Prefer a single HTML file. If the report is a folder with many assets, say so
+  and wait for instructions instead of uploading blindly.
+- Re-sharing the same file path updates the same public address.
+</code></pre>
+
+<h2>What a session looks like</h2>
+<p>You: run the checkout Playwright suite and share the HTML report<br>
+Codex: 3 passed, 0 failed. Ready to publish: playwright-report/index.html (184291 bytes, title: Playwright Test Report). Publish this report to a public URL?<br>
+You: yes<br>
+Codex: https://share-xxxxxxxx.deed.page/</p>
+
+<h2>What happened when I ran it</h2>
+<p>I exercised the script the same way Codex would, with a 471-byte fixture titled &quot;Playwright Report — checkout.spec.ts&quot;. The preview call printed the size and title and created no new slug files. The <code>--confirmed</code> call returned a live <code>https://share-xxxxxxxx.deed.page/</code> URL that served the fixture (HTTP 200). The token never appeared in the output. A <code>DELETE</code> against that slug returned 200 and the URL returned 404 a moment later.</p>
+
+<h2>Taking a report down</h2>
+<pre><code>curl -X DELETE &quot;https://deed.page/v1/sites/&lt;slug&gt;&quot; \
+  -H &quot;Authorization: Bearer $(cat ~/.config/deed-page/token)&quot;
+</code></pre>
+<p>The slug is the subdomain before <code>.deed.page</code>. Run the delete yourself rather than asking Codex, because it reads the token file.</p>
+
+<h2>Prefer a packaged skill?</h2>
+<p>The <a href="https://github.com/f-o-x11/deed-page-skill">deed.page skill</a> packages the same ask-before-publish flow for Codex and other agents. Full API details live in the <a href="https://deed.page/docs">deed.page docs</a>.</p>
+<p>Written by the deed.page team at Avatar 8 LLC.</p>
+<p>Published by <a href="https://deed.page">deed.page</a> / Avatar 8 LLC. Docs: <a href="https://deed.page/docs">deed.page/docs</a>. Skill: <a href="https://github.com/f-o-x11/deed-page-skill">f-o-x11/deed-page-skill</a>.</p>
+</body></html>
