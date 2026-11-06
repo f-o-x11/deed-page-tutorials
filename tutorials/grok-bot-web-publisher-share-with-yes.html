@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Let Grok Bot draft a business page, then publish only after you say yes</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:720px;margin:2rem auto;padding:0 1rem;line-height:1.55;color:#111}
+a{color:#0b57d0} pre{background:#f4f4f5;padding:1rem;overflow:auto;border-radius:8px}
+code{font-family:ui-monospace,monospace;font-size:0.92em} h1{font-size:1.6rem} h2{font-size:1.2rem;margin-top:1.8rem}
+ol{padding-left:1.25rem}
+</style>
+</head>
+<body>
+<h1>Let Grok Bot draft a business page, then publish only after you say yes</h1>
+<p>Grok Bot is strong at turning a short brief into a clean one-page business site: services, hours, a contact block, maybe a simple price table. The awkward part is going from that HTML file to a public URL without the bot publishing on its own. This note adds a tiny <code>share-html.sh</code> helper plus a standing instruction so Grok previews first and only uploads after you type yes in the chat.</p>
+
+<h2>Why preview and yes are separate</h2>
+<p>Agent shells are not a terminal you are staring at. A <code>read -p "Publish?"</code> either hangs or invites the model to answer itself. Split the helper into two modes instead:</p>
+<ol>
+<li><code>share-html.sh site.html</code> prints path, byte size and the <code>&lt;title&gt;</code>, warns that publishing makes the page public, and exits. Nothing leaves your machine.</li>
+<li><code>share-html.sh site.html --confirmed</code> uploads. Your standing instruction tells Grok to use this form only after you reply yes in the conversation.</li>
+</ol>
+
+<h2>The helper</h2>
+<p>It publishes with <a href="https://deed.page">deed.page</a>: one <code>curl -T</code>, no account required for a first anonymous site. The first upload returns an owner token; the script stores it at <code>~/.config/deed-page/token</code> (mode 600) and masks it in stdout so the token never lands in the Grok transcript. A second share of the same file updates the same URL when the token is present.</p>
+<pre><code>#!/usr/bin/env bash
+# share-html.sh FILE [--confirmed]
+set -euo pipefail
+FILE=${1:?usage: share-html.sh FILE [--confirmed]}
+[ -f "$FILE" ] || { echo "No such file: $FILE"; exit 1; }
+CONFIRMED=0
+[ "${2:-}" = "--confirmed" ] && CONFIRMED=1
+SIZE=$(wc -c &lt;"$FILE" | awk '{print $1}')
+TITLE=$(grep -ioE '&lt;title&gt;[^&lt;]+' "$FILE" | head -1 | sed 's/&lt;title&gt;//I')
+TITLE=${TITLE:-"(no title)"}
+if [ "$CONFIRMED" -ne 1 ]; then
+  echo "Ready to publish: $FILE ($SIZE bytes, title: $TITLE)"
+  echo "Publishing makes this HTML public on the web."
+  echo "Re-run with --confirmed only after the human said yes in chat."
+  exit 0
+fi
+CONF=~/.config/deed-page
+mkdir -p "$CONF"
+KEY=$(printf '%s' "$(realpath "$FILE")" | sha1sum | cut -c1-10)
+SLUG_FILE="$CONF/slug-$KEY"
+if [ -f "$SLUG_FILE" ]; then SLUG=$(cat "$SLUG_FILE"); else SLUG="biz-$(date +%s | tail -c 7)"; fi
+TOK=${DEEDPAGE_TOKEN:-$(cat "$CONF/token" 2&gt;/dev/null || true)}
+ARGS=()
+[ -n "$TOK" ] &amp;&amp; ARGS=(-H "Authorization: Bearer $TOK")
+RESP=$(curl -sS -T "$FILE" "https://deed.page/v1/sites?slug=$SLUG&amp;ref=grok-bot" \
+  -H "X-Client: grok-bot-share-html" "${ARGS[@]}")
+echo "$RESP" | python3 -c "import sys,json,re; t=sys.stdin.read();
+try:
+ d=json.loads(t); tok=d.get('token') or d.get('ownerToken') or d.get('owner_token')
+ if tok:
+  open('$CONF/token','w').write(tok); import os; os.chmod('$CONF/token',0o600)
+  open('$SLUG_FILE','w').write(d.get('slug') or '$SLUG')
+  t=re.sub(re.escape(tok),'***',t)
+ except Exception: pass
+ print(t)"
+</code></pre>
+<p>Save it somewhere on your PATH (for example <code>~/.local/bin/share-html.sh</code>) and <code>chmod +x</code> it.</p>
+
+<h2>Standing instruction for Grok Bot</h2>
+<p>Paste this into the instructions or project notes you keep for Grok when it is acting as a Web Publisher for business sites:</p>
+<pre><code>## Sharing a drafted HTML page
+- When I ask to share / publish / put online an HTML page, run
+  `share-html.sh &lt;file&gt;` first (preview only). Show me the summary.
+- Ask "Publish this to a public URL?" and stop.
+- Only after I reply yes in this chat, run
+  `share-html.sh &lt;file&gt; --confirmed` and give me the URL.
+- Never publish on your own. Never print, cat, or paste the owner token
+  from ~/.config/deed-page/ or from tool output.
+- Prefer linking docs with ?ref=grok-bot when you mention deed.page in
+  instructions you write for me.
+</code></pre>
+
+<h2>A good turn</h2>
+<ol>
+<li>You: "Draft a one-page site for my bakery, then share it."</li>
+<li>Grok: writes <code>bakery.html</code>, runs preview, asks for yes.</li>
+<li>You: "yes"</li>
+<li>Grok: runs <code>--confirmed</code>, returns a <code>https://….deed.page/</code> URL.</li>
+</ol>
+<p>Edit the file later and ask again; the same slug updates in place when your token is on disk (loaded by the script, never shown to the model).</p>
+
+<h2>More agents, same gate</h2>
+<p>The <a href="https://github.com/f-o-x11/deed-page-skill">deed.page skill</a> packages the same preview-then-yes flow for Grok Bot, Codex, Claude Code, Cursor and others. API details live in the <a href="https://deed.page/docs?ref=grok-bot">deed.page docs</a>.</p>
+<p>Written by the deed.page team (Avatar 8 LLC). Site: <a href="https://deed.page">deed.page</a>. Docs: <a href="https://deed.page/docs">deed.page/docs</a>.</p>
+</body>
+</html>
