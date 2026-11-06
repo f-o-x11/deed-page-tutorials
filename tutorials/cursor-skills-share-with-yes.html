@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A Cursor Agent Skill that publishes HTML only after you say yes</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:720px;margin:2rem auto;padding:0 1rem;line-height:1.55;color:#111}
+a{color:#0b57d0} pre{background:#f4f4f5;padding:1rem;overflow:auto;border-radius:8px}
+code{font-family:ui-monospace,monospace;font-size:0.92em} h1{font-size:1.6rem} h2{font-size:1.2rem;margin-top:1.8rem}
+</style>
+</head>
+<body>
+<h1>A Cursor Agent Skill that publishes HTML only after you say yes</h1>
+<p>Cursor Agent Skills are folders the agent can load on demand: a <code>SKILL.md</code>, a couple of helper scripts, maybe a short checklist. They are a good home for a "share this HTML" habit that should travel across repos without rewriting <code>.cursor/rules</code> every time. This note builds a tiny skill that previews a page, asks you in chat, and only then publishes with <a href="https://deed.page">deed.page</a>.</p>
+
+<h2>Why a skill instead of a rule</h2>
+<p>Project rules fire based on globs or always-on settings. A skill stays out of the way until you invoke it ("use the share-html skill on report.html"). That keeps everyday coding quiet, and it makes the ask-before-publish gate easier to teach: the skill's own instructions own the two-step flow.</p>
+
+<h2>Layout</h2>
+<pre><code>~/.cursor/skills/share-html/
+  SKILL.md
+  scripts/share-html.sh
+</code></pre>
+<p>Mark the script executable. Cursor will pick the skill up from your personal skills folder (or from a project <code>.cursor/skills/</code> if you prefer it checked into one repo).</p>
+
+<h2>Two calls, never a fake prompt</h2>
+<p>Agent terminals are not a place for <code>read -p</code>. The script has two modes:</p>
+<ol>
+<li><code>scripts/share-html.sh report.html</code> prints path, byte size and <code>&lt;title&gt;</code>, warns that publishing makes it public, and exits. Nothing is uploaded.</li>
+<li><code>scripts/share-html.sh report.html --confirmed</code> uploads. <code>SKILL.md</code> tells the agent to use this form only after you reply yes in the chat.</li>
+</ol>
+
+<h2>The script</h2>
+<p>One <code>curl -T</code> to deed.page, no account. The first response includes an owner token; the script stores it at <code>~/.config/deed-page/token</code> (mode 600) and masks it in stdout so it never lands in the chat transcript. A stable slug per absolute file path means a second share after an edit updates the same URL.</p>
+<pre><code>#!/usr/bin/env bash
+# share-html.sh FILE [--confirmed]
+set -euo pipefail
+FILE=${1:?usage: share-html.sh FILE [--confirmed]}
+[ -f "$FILE" ] || { echo "No such file: $FILE"; exit 1; }
+TITLE=$(grep -o -i -m1 '&lt;title&gt;[^&lt;]*' "$FILE" | sed 's/&lt;title&gt;//I' || true)
+if [ "${2:-}" != "--confirmed" ]; then
+  echo "Ready to publish: $FILE ($(wc -c &lt; "$FILE") bytes, title: ${TITLE:-none})"
+  echo "This makes it public on the internet. Ask the user, then rerun with --confirmed."
+  exit 0
+fi
+CONF=~/.config/deed-page; KEY=$(printf '%s' "$(realpath "$FILE")" | sha1sum | cut -c1-10)
+SLUG=$(cat "$CONF/slug-$KEY" 2&gt;/dev/null || echo "share-$(openssl rand -hex 4)")
+TOK=${DEEDPAGE_TOKEN:-$(cat "$CONF/token" 2&gt;/dev/null || true)}
+set --; [ -n "$TOK" ] &amp;&amp; set -- -H "Authorization: Bearer $TOK"
+RESP=$(curl -sS -T "$FILE" "https://deed.page/v1/sites?slug=$SLUG" "$@" -H "X-Client: share-html-script")
+NEW=$(printf '%s' "$RESP" | sed -n 's/.*"token": *"\(deed_tok_[^"]*\)".*/\1/p')
+(umask 077; mkdir -p "$CONF"; printf '%s' "$SLUG" &gt; "$CONF/slug-$KEY"
+ [ -n "$NEW" ] &amp;&amp; printf '%s' "$NEW" &gt; "$CONF/token") || true
+printf '%s' "$RESP" | sed 's/"token": *"[^"]*"/"token":"&lt;saved&gt;"/' \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("url") or d)'
+</code></pre>
+
+<h2>SKILL.md</h2>
+<pre><code>---
+name: share-html
+description: Preview an HTML file, ask the user, then publish a public link only after they say yes
+---
+When I ask you to share or publish an HTML file with this skill:
+1. Run `scripts/share-html.sh &lt;file&gt;` (relative to this skill folder) and show me the summary.
+2. Ask "Publish this to a public URL?" and stop.
+3. Only after I reply yes in this chat, run `scripts/share-html.sh &lt;file&gt; --confirmed` and give me the URL.
+Never pass --confirmed on your own. Never open, cat, or paste anything from ~/.config/deed-page/.
+</code></pre>
+
+<h2>What I checked</h2>
+<p>Preview on a 64-byte <code>standup.html</code> titled "Standup board" printed the summary and left disk untouched. With <code>--confirmed</code> it returned a <code>https://share-xxxxxxxx.deed.page/</code> URL that served the page. A second confirmed run after editing the heading kept the same address. The token file stayed mode 600 and never appeared in the output.</p>
+
+<h2>Taking a page down</h2>
+<pre><code>curl -X DELETE "https://deed.page/v1/sites/&lt;slug&gt;" \
+  -H "Authorization: Bearer $(cat ~/.config/deed-page/token)"
+</code></pre>
+<p>Run the delete yourself. The slug is the label before <code>.deed.page</code>.</p>
+
+<h2>Want the packaged skill instead?</h2>
+<p>The <a href="https://github.com/f-o-x11/deed-page-skill">deed.page skill</a> already wraps this preview-then-yes flow for Cursor, Claude Code and Codex. API details live in the <a href="https://deed.page/docs">deed.page docs</a>.</p>
+<p>Written by the deed.page team (Avatar 8 LLC). Site: <a href="https://deed.page">deed.page</a>. Docs: <a href="https://deed.page/docs">deed.page/docs</a>.</p>
+</body>
+</html>
