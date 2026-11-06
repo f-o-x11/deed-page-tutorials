@@ -2,7 +2,7 @@
 
 Public HTML tutorials from the [deed.page](https://deed.page) / Avatar 8 LLC team.
 
-These pages teach ask-before-publish patterns for Codex, Claude Code, and other agents (preview first, publish only after a human yes; owner token never shown to the model).
+These pages teach ask-before-publish patterns for Codex, Claude Code, Gemini CLI, and other agents (preview first, publish only after a human yes; owner token never shown to the model).
 
 - Docs: https://deed.page/docs
 - Skill: https://github.com/f-o-x11/deed-page-skill

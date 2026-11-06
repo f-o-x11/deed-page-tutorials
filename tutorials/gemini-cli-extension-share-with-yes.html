@@ -1,0 +1,44 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Gemini CLI extension: share HTML only after the user says yes</title><style>body{font-family:system-ui,sans-serif;max-width:720px;margin:2rem auto;padding:0 1rem;line-height:1.55;color:#111} a{color:#0b57d0} pre{background:#f4f4f5;padding:1rem;overflow:auto;border-radius:8px} code{font-family:ui-monospace,monospace;font-size:0.92em} h1{font-size:1.6rem} h2{font-size:1.2rem;margin-top:1.8rem}</style></head><body><h1>Gemini CLI extension: share HTML only after the user says yes</h1><p>Gemini CLI can already write a status page, an experiment log or a small interactive chart as a single HTML file. The awkward step is getting that file onto the public web without turning the model into an unattended publisher. This walkthrough wires a tiny shell helper into a Gemini CLI extension so the model can propose a share, show you the preview, and only upload after you type an explicit yes in the chat.</p><h2>What a Gemini CLI extension is here</h2><p>A Gemini CLI extension is a public repo with a <code>gemini-extension.json</code> at the root (and usually the GitHub topic <code>gemini-cli-extension</code>). The gallery at <code>geminicli.com/extensions</code> crawls those files; there is no separate submission form. Your extension can declare MCP servers, ship skill text the CLI reads, and include helper scripts the model is allowed to run. The deed.page skill repo already ships a <code>gemini-extension.json</code> that points at the hosted MCP; this tutorial shows the complementary pattern of a local <code>share-html.sh</code> for one-file HTML when you want the upload path under your own eyes.</p><h2>Two calls, never a silent upload</h2><p>Do not put a &quot;Publish? [y/N]&quot; prompt inside the script. The Gemini CLI shell is not a terminal you are staring at, and the model can answer that prompt for you. Split the flow into two invocations instead:</p><p>1. <code>share-html.sh report.html</code> prints path, byte size and <code>&lt;title&gt;</code>, reminds the model that publishing makes the file public, and exits without touching the network. 2. <code>share-html.sh report.html --confirmed</code> uploads with <code>curl -T</code> and prints the public URL.</p><p>Put the second call behind a hard rule in the extension skill text: never pass <code>--confirmed</code> unattended, and never invent a yes from a prior turn. Only the human&#x27;s current reply counts.</p><h2>The script</h2><p>Ship it as <code>bin/share-html.sh</code> inside the extension (or under <code>~/.gemini/extensions/deed-page/bin/</code> after install) and mark it executable. It publishes through <a href="https://deed.page">deed.page</a>: one HTML file, one <code>curl -T</code>, no account. The first successful upload returns an owner token; the script writes it to <code>~/.config/deed-page/token</code> with mode 600 and rewrites the JSON so the token never appears in the Gemini transcript.</p><pre><code>#!/usr/bin/env bash
+# share-html.sh FILE [--confirmed]
+# Preview (no --confirmed): print path/size/title and exit. No upload.
+# --confirmed: upload via curl -T to https://deed.page/v1/sites
+# Gemini CLI / extension skills must NEVER pass --confirmed unattended.
+set -euo pipefail
+FILE=${1:?usage: share-html.sh FILE [--confirmed]}
+[ -f &quot;$FILE&quot; ] || { echo &quot;No such file: $FILE&quot;; exit 1; }
+TITLE=$(grep -o -i -m1 &#x27;&lt;title&gt;[^&lt;]*&#x27; &quot;$FILE&quot; | sed &#x27;s/&lt;title&gt;//I&#x27; || true)
+if [ &quot;${2:-}&quot; != &quot;--confirmed&quot; ]; then
+  echo &quot;Ready to publish: $FILE ($(wc -c &lt; &quot;$FILE&quot;) bytes, title: ${TITLE:-none})&quot;
+  echo &quot;Publishing makes this public on the internet. Ask the user, then rerun with --confirmed.&quot;
+  exit 0
+fi
+CONF=~/.config/deed-page; KEY=$(printf &#x27;%s&#x27; &quot;$(realpath &quot;$FILE&quot;)&quot; | sha1sum | cut -c1-10)
+SLUG=$(cat &quot;$CONF/slug-$KEY&quot; 2&gt;/dev/null || echo &quot;share-$(openssl rand -hex 4)&quot;)
+TOK=${DEEDPAGE_TOKEN:-$(cat &quot;$CONF/token&quot; 2&gt;/dev/null || true)}
+set --; [ -n &quot;$TOK&quot; ] &amp;&amp; set -- -H &quot;Authorization: Bearer $TOK&quot;
+RESP=$(curl -sS -T &quot;$FILE&quot; &quot;https://deed.page/v1/sites?slug=$SLUG&quot; &quot;$@&quot; -H &quot;X-Client: gemini-cli-share-html&quot;)
+NEW=$(printf &#x27;%s&#x27; &quot;$RESP&quot; | sed -n &#x27;s/.*&quot;token&quot;: *&quot;\(deed_tok_[^&quot;]*\)&quot;.*/\1/p&#x27;)
+(umask 077; mkdir -p &quot;$CONF&quot;; printf &#x27;%s&#x27; &quot;$SLUG&quot; &gt; &quot;$CONF/slug-$KEY&quot;
+ [ -n &quot;$NEW&quot; ] &amp;&amp; printf &#x27;%s&#x27; &quot;$NEW&quot; &gt; &quot;$CONF/token&quot;) || true
+printf &#x27;%s&#x27; &quot;$RESP&quot; | sed &#x27;s/&quot;token&quot;: *&quot;[^&quot;]*&quot;/&quot;token&quot;:&quot;&lt;saved&gt;&quot;/&#x27; \
+  | python3 -c &#x27;import json,sys; d=json.load(sys.stdin); print(d.get(&quot;url&quot;) or d)&#x27;
+</code></pre><h2>Skill text the extension should teach Gemini CLI</h2><p>Keep this next to <code>gemini-extension.json</code> (for example in <code>skills/deed-page/SKILL.md</code> or a short GEMINI.md the extension loads). The important lines are the ones that forbid an unattended <code>--confirmed</code> and forbid reading the token file into the model context.</p><pre><code>## Sharing an HTML file from Gemini CLI
+- When the user asks to share, host or publish an HTML file, run
+  `bin/share-html.sh &lt;file&gt;` first and show them the preview summary.
+- Ask &quot;Publish this to a public URL?&quot; and stop. Only after they reply yes
+  in this conversation, run `bin/share-html.sh &lt;file&gt; --confirmed`.
+- Never pass --confirmed on your own. Never open, cat or print anything
+  under ~/.config/deed-page/. Never paste the owner token into chat.
+- Re-sharing the same file: preview again, wait for yes, then --confirmed.
+  The slug stays stable so the URL does not change.
+</code></pre><h2>Minimal gemini-extension.json</h2><p>Enough for the gallery crawler and for Gemini CLI to discover the MCP. Pair it with the skill text above and the <code>bin/share-html.sh</code> helper.</p><pre><code>{
+  &quot;name&quot;: &quot;deed-page&quot;,
+  &quot;version&quot;: &quot;1.8.0&quot;,
+  &quot;description&quot;: &quot;Publish a single HTML file to a public deed.page URL only after the user confirms. Preview first; never upload unattended.&quot;,
+  &quot;mcpServers&quot;: {
+    &quot;deed-page&quot;: { &quot;httpUrl&quot;: &quot;https://deed.page/mcp&quot; }
+  }
+}
+</code></pre><h2>What happened when I ran the script</h2><p>I exercised the same two-call pattern Gemini CLI would use, against a 120-byte <code>gemini-demo.html</code> titled &quot;Gemini CLI share demo&quot;. The preview call printed path, size and title and left no network traffic and no files under <code>~/.config/deed-page/</code> for that path. The <code>--confirmed</code> call returned a live <code>https://share-xxxxxxxx.deed.page/</code> URL (HTTP 200). Editing the heading and running <code>--confirmed</code> again updated the same slug. Stdout showed <code>&lt;saved&gt;</code> instead of the token, and the token file was mode 600. A DELETE with that token returned 200 and the URL then returned 404.</p><h2>Removing a page</h2><pre><code>curl -X DELETE &quot;https://deed.page/v1/sites/&lt;slug&gt;&quot; \
+  -H &quot;Authorization: Bearer $(cat ~/.config/deed-page/token)&quot;
+</code></pre><p>The slug is the hostname label before <code>.deed.page</code>. Run DELETE yourself rather than asking the model to, because it must read the token.</p><h2>Prefer the packaged skill?</h2><p>The <a href="https://github.com/f-o-x11/deed-page-skill">deed.page skill</a> already includes a <code>gemini-extension.json</code> and the same ask-before-publish rules for Gemini CLI, Claude Code, Codex and others. Full HTTP details live in the <a href="https://deed.page/docs">deed.page docs</a>.</p><p>Written by the deed.page team.</p><p>Published by <a href="https://deed.page">deed.page</a> / Avatar 8 LLC. Docs: <a href="https://deed.page/docs">deed.page/docs</a>. Skill: <a href="https://github.com/f-o-x11/deed-page-skill">f-o-x11/deed-page-skill</a>.</p></body></html>
