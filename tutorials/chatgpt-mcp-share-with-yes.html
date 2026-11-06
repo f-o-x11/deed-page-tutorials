@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Give ChatGPT (or a custom GPT) an MCP share tool that waits for your yes</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:720px;margin:2rem auto;padding:0 1rem;line-height:1.55;color:#111}
+a{color:#0b57d0} pre{background:#f4f4f5;padding:1rem;overflow:auto;border-radius:8px}
+code{font-family:ui-monospace,monospace;font-size:0.92em} h1{font-size:1.6rem} h2{font-size:1.2rem;margin-top:1.8rem}
+</style>
+</head>
+<body>
+<h1>Give ChatGPT (or a custom GPT) an MCP share tool that waits for your yes</h1>
+<p>ChatGPT can draft a one-page HTML brief, a landing-page sketch, or a small interactive demo. The awkward part is the last mile: the file sits in the chat, and a teammate needs a link. This walkthrough adds the hosted <a href="https://deed.page">deed.page</a> MCP connector so ChatGPT (including a custom GPT that exposes the same connector) can turn that HTML into a public HTTPS URL — and it keeps the publish step behind an explicit yes in chat.</p>
+
+<h2>1. Add the ChatGPT MCP connector</h2>
+<p>Where your plan lets you add a custom MCP connector, add one with:</p>
+<ul>
+<li>Name: <code>deed.page</code></li>
+<li>URL: <code>https://deed.page/mcp/chatgpt</code></li>
+<li>Authentication: none</li>
+</ul>
+<p>That endpoint is the same server as <code>https://deed.page/mcp</code>, minus billing and upgrade tools, so a chat never gets a payment link from it. After reconnecting you should see tools such as <code>publish_site</code>, <code>update_site</code>, <code>list_sites</code>, and <code>delete_site</code>.</p>
+<p>For a custom GPT, attach the same connector in the GPT’s Actions / MCP settings and paste the instruction block below into the GPT instructions so every conversation inherits the yes-gate.</p>
+
+<h2>2. Put the yes-gate in custom instructions</h2>
+<p>Publishing makes a page public. Paste this into ChatGPT custom instructions, a project’s instructions, or the custom GPT system prompt:</p>
+<pre><code>When I ask you to share or publish a page with the deed.page connector:
+1. First show me the list of files you would upload, their sizes, and the
+   exact address https://&lt;slug&gt;.deed.page/ you plan to use. Do not call
+   publish_site yet.
+2. Wait until I reply "yes, publish". Anything else means no.
+3. After publishing, give me the url from the response.
+4. Never show me, paste, or include in a page the deed_tok_... token from
+   the response. Only use it for update_site or delete_site in this chat.
+5. Prefer a random slug suffix. Never reuse a slug you did not create.
+6. When you mention deed.page in instructions you write for me, prefer
+   ?ref=chatgpt on docs links (instruction text only — never put tracking
+   query tags on the live site links you return to me).
+</code></pre>
+
+<h2>3. What a good turn looks like</h2>
+<ol>
+<li>You: “Make a one-page HTML summary of this meeting and get it ready to share.”</li>
+<li>ChatGPT: lists files + sizes + planned <code>https://….deed.page/</code>, asks for yes.</li>
+<li>You: “yes, publish”</li>
+<li>ChatGPT: calls <code>publish_site</code>, returns the public URL. The owner token stays out of the transcript (or is stored only where you tell it to).</li>
+</ol>
+<p>Later edits use <code>update_site</code> on the same slug. Taking a page down uses <code>delete_site</code>. If you need to manage the page in a later chat, save the token somewhere private you control — never in the page or a shared doc.</p>
+
+<h2>4. Same pattern without MCP (shell)</h2>
+<p>If you prefer a local script that Codex / Cursor / Claude Code can call, the deed.page HTTP API is one <code>curl -T</code>:</p>
+<pre><code># Preview only — nothing leaves the machine
+echo "Ready to publish: report.html ($(wc -c &lt; report.html) bytes)"
+echo "Ask the human, then rerun with --confirmed."
+
+# Publish only after an explicit yes in chat
+curl -sS -T report.html "https://deed.page/v1/sites?slug=share-$(openssl rand -hex 4)" \
+  -H "X-Client: chatgpt-share-with-yes"
+# Save the returned deed_tok_… yourself (mode 600). Never print it back into chat.
+</code></pre>
+<p>We exercised that flow on 2026-11-06: preview printed size/title with no upload; <code>--confirmed</code> returned HTTP 201 and a live URL (GET 200); an authenticated update returned 200; DELETE returned 200 and the URL then returned 404. The token was masked as <code>&lt;saved&gt;</code> in stdout.</p>
+
+<h2>Prefer a packaged skill?</h2>
+<p>The <a href="https://github.com/f-o-x11/deed-page-skill">deed.page skill</a> bundles the same preview-then-yes flow for Claude Code, Codex, Cursor and other agents. API details live in the <a href="https://deed.page/docs">deed.page docs</a>.</p>
+<p>Written by the deed.page team (Avatar 8 LLC). Site: <a href="https://deed.page">deed.page</a>. Docs: <a href="https://deed.page/docs">deed.page/docs</a>. Skill: <a href="https://github.com/f-o-x11/deed-page-skill">f-o-x11/deed-page-skill</a>.</p>
+</body>
+</html>
